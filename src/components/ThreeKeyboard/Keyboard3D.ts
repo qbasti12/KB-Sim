@@ -37,6 +37,10 @@ export class Keyboard3D {
   // RGB lighting
   private rgbLights: THREE.PointLight[] = [];
 
+  private pointerStartX = 0;
+  private pointerStartY = 0;
+  private pointerStartTime = 0;
+
   constructor(container: HTMLElement, state: KeyboardState, callbacks: Keyboard3DCallbacks = {}) {
     this.container = container;
     this.currentState = state;
@@ -253,6 +257,40 @@ export class Keyboard3D {
 
     // Angle keyboard slightly (6 degree ergonomic typing slope)
     this.keyboardGroup.rotation.x = THREE.MathUtils.degToRad(5.5);
+
+    // Auto-frame camera based on keyboard size and screen aspect ratio
+    this.adjustCameraForScreen(bounds);
+  }
+
+  public adjustCameraForScreen(bounds?: { width: number; height: number }) {
+    const currentBounds =
+      bounds || getLayoutBounds(getKeyboardLayout(this.currentState.size, this.currentState.layout));
+    const width = this.container.clientWidth || 800;
+    const height = this.container.clientHeight || 600;
+    const aspect = width / height;
+
+    const isMobile = width < 768 || aspect < 1.0;
+    const kbWidth = currentBounds.width + 1.6;
+    const kbHeight = currentBounds.height + 1.6;
+
+    if (isMobile) {
+      // In portrait/narrow mobile screen, horizontal FOV limits visibility
+      const vFovRad = THREE.MathUtils.degToRad(this.camera.fov);
+      const hFovRad = 2 * Math.atan(Math.tan(vFovRad / 2) * aspect);
+      const distForWidth = (kbWidth / 2) / Math.tan(hFovRad / 2);
+      const distForHeight = (kbHeight / 2) / Math.tan(vFovRad / 2);
+      const targetDist = Math.max(distForWidth, distForHeight) * 1.32;
+
+      this.camera.position.set(0, targetDist * 0.9, targetDist * 0.85);
+      this.controls.minDistance = 4;
+      this.controls.maxDistance = targetDist * 2.5;
+    } else {
+      this.camera.position.set(0, 16, 20);
+      this.controls.minDistance = 6;
+      this.controls.maxDistance = 45;
+    }
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
   }
 
   private createKeycapMesh(key: KeyDefinition): THREE.Mesh {
@@ -551,11 +589,43 @@ export class Keyboard3D {
     }, 90);
   }
 
+  private handleTapAt(clientX: number, clientY: number) {
+    const dom = this.renderer.domElement;
+    const rect = dom.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(new THREE.Vector2(x, y), this.camera);
+    const meshes = Array.from(this.keycapMeshes.values());
+    const intersects = this.raycaster.intersectObjects(meshes, true);
+
+    if (intersects.length > 0) {
+      let hitMesh: THREE.Mesh | null = null;
+      for (const hit of intersects) {
+        if (hit.object instanceof THREE.Mesh && hit.object.userData?.keyId) {
+          hitMesh = hit.object;
+          break;
+        }
+      }
+
+      if (hitMesh && hitMesh.userData?.keyId) {
+        const keyId = hitMesh.userData.keyId;
+        const key = this.keyDefinitions.get(keyId);
+        if (key) {
+          this.triggerKeyPress(keyId);
+          const currentColor = this.currentState.keyColors[keyId] || '#d1d5db';
+          this.callbacks.onKeyClick?.(key, currentColor);
+        }
+      }
+    }
+  }
+
   private bindEvents() {
     const dom = this.renderer.domElement;
 
-    // Pointer move for hover raycasting
-    const onPointerMove = (e: MouseEvent) => {
+    // Pointer move for hover raycasting (primarily on pointer/mouse devices)
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return; // Skip hover highlight while dragging on mobile touch
       const rect = dom.getBoundingClientRect();
       this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -563,42 +633,26 @@ export class Keyboard3D {
       this.checkHover(e);
     };
 
-    // Pointer click for tool action
-    const onPointerDown = (e: MouseEvent) => {
-      if (e.button !== 0) return; // Left click only
+    // Track touch/pointer start to distinguish between tap and 3D camera drag
+    const onPointerDown = (e: PointerEvent) => {
+      this.pointerStartX = e.clientX;
+      this.pointerStartY = e.clientY;
+      this.pointerStartTime = performance.now();
+    };
 
-      const rect = dom.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return; // Left click only for mouse
+      const dist = Math.hypot(e.clientX - this.pointerStartX, e.clientY - this.pointerStartY);
+      const elapsed = performance.now() - this.pointerStartTime;
 
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const meshes = Array.from(this.keycapMeshes.values());
-      const intersects = this.raycaster.intersectObjects(meshes, true);
-
-      if (intersects.length > 0) {
-        let hitMesh: THREE.Mesh | null = null;
-        for (const hit of intersects) {
-          if (hit.object instanceof THREE.Mesh && hit.object.userData?.keyId) {
-            hitMesh = hit.object;
-            break;
-          }
-        }
-
-        if (hitMesh && hitMesh.userData?.keyId) {
-          const keyId = hitMesh.userData.keyId;
-          const key = this.keyDefinitions.get(keyId);
-          if (key) {
-            this.triggerKeyPress(keyId);
-            const currentColor = this.currentState.keyColors[keyId] || '#d1d5db';
-            this.callbacks.onKeyClick?.(key, currentColor);
-          }
-        }
+      // Tap threshold: finger or mouse moved less than 12px and released within 350ms
+      if (dist < 12 && elapsed < 350) {
+        this.handleTapAt(e.clientX, e.clientY);
       }
     };
 
     // Global physical keyboard listener to simulate mechanical typing
     const onKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if user is typing in an input or textarea
       if (
         document.activeElement?.tagName === 'INPUT' ||
         document.activeElement?.tagName === 'TEXTAREA'
@@ -608,15 +662,17 @@ export class Keyboard3D {
       this.triggerKeyPress(e.code);
     };
 
-    dom.addEventListener('mousemove', onPointerMove);
-    dom.addEventListener('click', onPointerDown);
+    dom.addEventListener('pointermove', onPointerMove);
+    dom.addEventListener('pointerdown', onPointerDown);
+    dom.addEventListener('pointerup', onPointerUp);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', this.onWindowResize);
 
     // Cleanup reference
     (dom as any)._cleanup = () => {
-      dom.removeEventListener('mousemove', onPointerMove);
-      dom.removeEventListener('click', onPointerDown);
+      dom.removeEventListener('pointermove', onPointerMove);
+      dom.removeEventListener('pointerdown', onPointerDown);
+      dom.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('resize', this.onWindowResize);
     };
@@ -668,6 +724,7 @@ export class Keyboard3D {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.adjustCameraForScreen();
   };
 
   private animate() {
@@ -720,9 +777,7 @@ export class Keyboard3D {
 
   // Reset camera view
   public resetCamera() {
-    this.camera.position.set(0, 16, 20);
-    this.controls.target.set(0, 0, 0);
-    this.controls.update();
+    this.adjustCameraForScreen();
   }
 
   public dispose() {

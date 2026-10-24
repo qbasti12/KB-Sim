@@ -90,6 +90,9 @@ export const App: React.FC = () => {
   });
 
   const [isGradientModalOpen, setIsGradientModalOpen] = useState(false);
+  const [isCustomizerOpen, setIsCustomizerOpen] = useState(
+    typeof window !== 'undefined' ? window.innerWidth >= 640 : true
+  );
   const [notification, setNotification] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -369,7 +372,7 @@ export const App: React.FC = () => {
           keyboardRef={keyboard3DRef}
         />
 
-        {/* Floating Tools Palette (Left) */}
+        {/* Floating Tools Palette (Left on desktop, bottom dock on mobile) */}
         <ToolBar
           activeTool={state.activeTool}
           bucketMode={state.bucketMode}
@@ -379,11 +382,15 @@ export const App: React.FC = () => {
           onSelectBucketMode={(mode) => setState((p) => ({ ...p, bucketMode: mode }))}
           onSelectTargetZone={(zone) => setState((p) => ({ ...p, targetZone: zone }))}
           onOpenGradientModal={() => setIsGradientModalOpen(true)}
+          onToggleCustomizer={() => setIsCustomizerOpen((prev) => !prev)}
+          isCustomizerOpen={isCustomizerOpen}
         />
 
-        {/* Customization Drawer (Right) */}
+        {/* Customization Drawer (Right sidebar on desktop, Bottom Sheet on mobile) */}
         <CustomizerPanel
           state={state}
+          isOpen={isCustomizerOpen}
+          onToggleOpen={() => setIsCustomizerOpen((prev) => !prev)}
           onColorChange={(color) => {
             setState((p) => ({ ...p, activeColor: color }));
             addRecentColor(color);
