@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -15,10 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,14 +33,29 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Add .nojekyll
+        run: touch dist/.nojekyll
+
+      # 1. Deploy directly to gh-pages branch (works if Pages Source is "Deploy from a branch -> gh-pages")
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          force_orphan: true
+
+      # 2. Deploy directly via GitHub Actions (works if Pages Source is "GitHub Actions")
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        continue-on-error: true
 
-      - name: Upload artifact
+      - name: Upload artifact for GitHub Actions Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: "./dist"
+        continue-on-error: true
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        continue-on-error: true
